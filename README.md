@@ -107,6 +107,13 @@ export GEMINI_API_KEY="your-key-here"   # never commit this
 uvicorn api.main:app --reload --port 8000
 ```
 
+### Run the Dashboard
+
+```bash
+streamlit run dashboard/app.py
+# opens at http://localhost:8501
+```
+
 ### Run the MCP Server (optional, for MCP clients)
 
 ```bash
@@ -212,7 +219,8 @@ finsight-ai/
 
 - [x] Week 1: LangGraph multi-agent pipeline with Research + Risk agents (Gemini)
 - [x] Week 2: Function-calling tool-use + MCP server exposing financial tools
-- [ ] Week 3: Deploy on Cloud Run + add Streamlit dashboard
+- [x] Week 3a: Streamlit dashboard over the pipeline
+- [ ] Week 3b: Deploy on Cloud Run (Secret Manager for the API key, timeout config)
 - [ ] Week 4: Add RAG over financial filings (ChromaDB) for document-grounded Q&A
 
 ---
