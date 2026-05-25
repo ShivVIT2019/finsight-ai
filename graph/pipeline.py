@@ -1,192 +1,123 @@
 """
-FinSight AI - LangGraph Pipeline
-=================================
-This is the core orchestration layer. It defines a LangGraph state machine
-that routes user queries through:
-
-  1. Research Agent → fetches market data + generates analysis
-  2. Risk Agent → computes risk metrics + generates assessment
-  3. Synthesis Node → combines both agents' outputs into a final answer
-
-The pipeline uses sequential execution (Research → Risk → Synthesis)
-because the Risk Agent depends on market data from the Research Agent.
-
-Future extension: Add conditional routing (e.g., skip risk analysis
-for pure information queries) and parallel agent execution for
-independent data gathering.
+FinSight AI — LangGraph Pipeline
+Orchestrates Research Agent -> Risk Agent -> Synthesis using shared FinState.
+Week 2: Gemini (google-genai) backbone; agents call real financial tools via
+manual function calling. MCP server (mcp_server/server.py) exposes the same
+tools over MCP for any external MCP client.
 """
 
+import json
 import os
-from dotenv import load_dotenv
+import time
+
+from google import genai
 from langgraph.graph import StateGraph, END
-from langchain_google_genai import ChatGoogleGenerativeAI
 
 from graph.state import FinState
-from agents.research_agent import research_node
-from agents.risk_agent import risk_node
-
-load_dotenv()
+from agents.research_agent import run_research_agent
+from agents.risk_agent import run_risk_agent
 
 
-def synthesize_node(state: FinState) -> dict:
-    """
-    Synthesis node that combines Research Agent and Risk Agent outputs
-    into a final, structured investment analysis.
-    
-    This node reads from all state fields populated by the two agents
-    and produces a comprehensive final answer with clear sections
-    and an overall confidence level.
-    """
-    market_data = state.get("market_data", {})
-    research_summary = state.get("research_summary", "No research data available.")
-    risk_metrics = state.get("risk_metrics", {})
-    risk_assessment = state.get("risk_assessment", "No risk data available.")
-    
-    # Determine confidence based on data quality
-    has_market_data = market_data and "error" not in market_data
-    has_risk_data = risk_metrics and "error" not in risk_metrics
-    
-    if has_market_data and has_risk_data:
-        confidence = "High"
-    elif has_market_data or has_risk_data:
-        confidence = "Medium"
-    else:
-        confidence = "Low"
-    
-    # Generate final synthesis using Gemini
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
-        temperature=0.3,
-        google_api_key=os.getenv("GOOGLE_API_KEY"),
+client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+MODEL = "gemini-2.5-flash"
+
+
+def extract_symbol(state: FinState) -> dict:
+    """Extract the stock ticker from the query if not explicitly provided."""
+    if state.get("symbol"):
+        # Return the symbol explicitly (delta only) so the channel is set.
+        return {"symbol": state["symbol"]}
+
+    response = client.models.generate_content(
+        model=MODEL,
+        contents=(
+            "Extract the stock ticker symbol from this query. Return ONLY the "
+            f"ticker, nothing else.\n\nQuery: {state['query']}"
+        ),
     )
-    
-    symbol = market_data.get("symbol", "Unknown")
-    company = market_data.get("company_name", "Unknown")
-    
-    synthesis_prompt = f"""You are a senior financial advisor synthesizing research from two 
-specialist analysts. Combine their findings into a clear, actionable investment brief.
+    extracted = "".join(c for c in (response.text or "").strip().upper() if c.isalpha())
+    return {"symbol": extracted or "SPY"}
 
-RESEARCH ANALYST'S FINDINGS:
-{research_summary}
 
-RISK ANALYST'S FINDINGS:
-{risk_assessment}
+def synthesize(state: FinState) -> dict:
+    """Combine research + risk outputs into a final investment brief."""
+    research = state.get("research_summary", "No research data available.")
+    risk = state.get("risk_assessment", "No risk data available.")
+    risk_metrics = state.get("risk_metrics", {})
+    market_data = state.get("market_data", {}) or {}
+    symbol = state["symbol"]
 
-INVESTOR'S ORIGINAL QUESTION:
-{state['query']}
+    prompt = f"""You are the Synthesis Agent. Combine the research and risk analyses
+below into a final investment brief for {symbol}.
 
-KEY DATA POINTS:
-- Stock: {company} ({symbol})
-- Current Price: ${market_data.get('current_price', 'N/A')}
-- Risk Tier: {risk_metrics.get('risk_tier', 'Unknown')}
-- Risk Score: {risk_metrics.get('risk_score', 'N/A')}/100
-- Volatility: {risk_metrics.get('volatility', 'N/A')}
-- Sharpe Ratio: {risk_metrics.get('sharpe_ratio', 'N/A')}
+## Research Agent Output
+{research}
 
-Create a structured investment brief with these exact sections:
+## Risk Agent Output
+{risk}
 
-## Investment Analysis: {symbol}
+## Raw Risk Metrics
+{json.dumps(risk_metrics, indent=2) if risk_metrics else 'N/A'}
 
-**Overall Assessment**: [One sentence — bullish/bearish/neutral with reasoning]
+## Raw Market Data
+Price: ${market_data.get('current_price', 'N/A')}
+PE: {market_data.get('pe_ratio', 'N/A')}
+Sector: {market_data.get('sector', 'N/A')}
 
-**Market Position**: [2-3 sentences from research findings]
+---
 
-**Risk Profile**: [2-3 sentences from risk findings]
+Write a unified investment brief with:
+1. Executive Summary (2-3 sentences)
+2. Key Findings (specific numbers)
+3. Risk/Reward Assessment (integrate both agents)
+4. Recommendation (Buy/Hold/Sell + confidence High/Medium/Low + time horizon)
+5. Position Sizing Guidance (based on risk score)
 
-**Recommendation**: [Clear action — Buy/Hold/Sell with conditions and position sizing]
+Be direct and actionable. Target 300-400 words."""
 
-**Key Risks to Monitor**: [2-3 bullet points]
+    response = client.models.generate_content(model=MODEL, contents=prompt)
+    final_text = response.text or ""
 
-**Confidence Level**: {confidence}
+    confidence = "Medium"
+    lt = final_text.lower()
+    if "high confidence" in lt or "strong buy" in lt:
+        confidence = "High"
+    elif "low confidence" in lt or "insufficient" in lt:
+        confidence = "Low"
 
-Be direct, specific, and actionable. No generic disclaimers."""
-
-    response = llm.invoke(synthesis_prompt)
-    final_answer = response.content
-    
-    return {
-        "final_answer": final_answer,
-        "confidence": confidence,
-        "messages": [{"role": "assistant", "content": f"Synthesis: Completed investment brief for {symbol}"}]
-    }
+    return {"final_answer": final_text, "confidence": confidence}
 
 
 def build_pipeline():
-    """
-    Construct and compile the LangGraph pipeline.
-    
-    Graph structure:
-        research_node → risk_node → synthesize_node → END
-    
-    Returns:
-        Compiled LangGraph application ready to invoke.
-    """
     graph = StateGraph(FinState)
-    
-    # Add nodes
-    graph.add_node("research", research_node)
-    graph.add_node("risk", risk_node)
-    graph.add_node("synthesize", synthesize_node)
-    
-    # Define edges (sequential flow)
-    graph.set_entry_point("research")
+    graph.add_node("extract_symbol", extract_symbol)
+    graph.add_node("research", run_research_agent)
+    graph.add_node("risk", run_risk_agent)
+    graph.add_node("synthesize", synthesize)
+
+    graph.set_entry_point("extract_symbol")
+    graph.add_edge("extract_symbol", "research")
     graph.add_edge("research", "risk")
     graph.add_edge("risk", "synthesize")
     graph.add_edge("synthesize", END)
-    
-    # Compile
     return graph.compile()
 
 
-# Module-level pipeline instance
 pipeline = build_pipeline()
 
 
-def run_analysis(query: str) -> dict:
-    """
-    Run the full analysis pipeline for a user query.
-    
-    Args:
-        query: Natural language investment question
-              (e.g., "Should I invest in NVIDIA?")
-    
-    Returns:
-        Dict with final_answer, confidence, market_data, and risk_metrics
-    """
-    result = pipeline.invoke({
-        "query": query,
-        "messages": [],
-        "market_data": None,
-        "research_context": None,
-        "research_summary": None,
-        "risk_metrics": None,
-        "risk_assessment": None,
-        "final_answer": None,
-        "confidence": None,
-    })
-    
-    return {
-        "query": query,
-        "final_answer": result.get("final_answer", "Analysis failed."),
-        "confidence": result.get("confidence", "Low"),
-        "market_data": result.get("market_data"),
-        "risk_metrics": result.get("risk_metrics"),
-        "research_summary": result.get("research_summary"),
-        "risk_assessment": result.get("risk_assessment"),
+def run_analysis(query: str, symbol: str = "") -> dict:
+    """Run the full analysis pipeline and return the complete FinState."""
+    start = time.time()
+    initial_state: FinState = {
+        "query": query, "symbol": symbol,
+        "research_summary": None, "market_data": None,
+        "financial_summary": None, "peer_comparison": None,
+        "risk_metrics": None, "risk_assessment": None,
+        "final_answer": None, "confidence": None,
+        "processing_time_seconds": None, "model_used": None,
+        "tools_called": [],
     }
-
-
-if __name__ == "__main__":
-    # Quick test
-    print("=" * 60)
-    print("FinSight AI - Multi-Agent Financial Intelligence")
-    print("=" * 60)
-    
-    test_query = "Should I invest in NVIDIA right now?"
-    print(f"\nQuery: {test_query}")
-    print("-" * 60)
-    
-    result = run_analysis(test_query)
-    
-    print(f"\nConfidence: {result['confidence']}")
-    print(f"\n{result['final_answer']}")
+    result = pipeline.invoke(initial_state)
+    result["processing_time_seconds"] = round(time.time() - start, 2)
+    return result

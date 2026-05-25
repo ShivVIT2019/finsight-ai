@@ -1,137 +1,115 @@
 """
-FinSight AI - Research Agent
-============================
-The Research Agent is responsible for gathering and analyzing market data.
-It has access to two tools:
-  1. Market Data Tool (yfinance) - fetches real-time stock data
-  2. RAG Retrieval Tool (ChromaDB) - retrieves relevant financial context
+FinSight AI — Research Agent
+Uses the google-genai SDK with manual function calling to fetch market data,
+financial summaries, and peer comparisons via the shared financial tools.
 
-The agent writes its findings to the shared state so the Risk Agent
-can use them for risk assessment.
+The loop is explicit (not automatic function calling) so the agentic tool-use
+pattern is visible: model proposes a function_call -> we execute the real
+yfinance tool -> we send the result back as a function_response -> repeat until
+the model stops requesting tools.
 """
 
+import json
 import os
-import re
-from langchain_google_genai import ChatGoogleGenerativeAI
-from graph.state import FinState
-from agents.tools import fetch_market_data, format_large_number
+import time
+
+from google import genai
+from google.genai import types
+
+from agents.mcp_tools import GEMINI_TOOL_DECLARATIONS, execute_tool
 
 
-def extract_symbol(query: str) -> str:
-    """
-    Extract a stock ticker symbol from a natural language query.
-    Uses Gemini to interpret the query if no obvious ticker is found.
-    
-    Examples:
-        "Should I invest in NVIDIA?" → "NVDA"
-        "Is AAPL a good buy?" → "AAPL"
-        "Tell me about Tesla stock" → "TSLA"
-    """
-    # Direct ticker pattern (all caps, 1-5 chars)
-    ticker_pattern = r'\b([A-Z]{1,5})\b'
-    matches = re.findall(ticker_pattern, query)
-    
-    # Common words that look like tickers but aren't
-    stop_words = {"I", "A", "AI", "AM", "AN", "AS", "AT", "BE", "BY", "DO",
-                  "GO", "IF", "IN", "IS", "IT", "ME", "MY", "NO", "OF", "ON",
-                  "OR", "SO", "TO", "UP", "US", "WE", "THE", "AND", "FOR",
-                  "NOT", "BUT", "ARE", "CAN", "HAD", "HAS", "HER", "HIM",
-                  "HIS", "HOW", "ITS", "MAY", "NEW", "NOW", "OLD", "OUR",
-                  "OWN", "SAY", "SHE", "TOO", "USE", "WAY", "WHO", "HOW",
-                  "SHOULD", "GOOD", "BUY", "SELL", "STOCK", "INVEST"}
-    
-    valid_tickers = [m for m in matches if m not in stop_words]
-    
-    if valid_tickers:
-        return valid_tickers[0]
-    
-    # Company name to ticker mapping (common ones)
-    company_map = {
-        "apple": "AAPL", "google": "GOOGL", "alphabet": "GOOGL",
-        "microsoft": "MSFT", "amazon": "AMZN", "tesla": "TSLA",
-        "nvidia": "NVDA", "meta": "META", "facebook": "META",
-        "netflix": "NFLX", "amd": "AMD", "intel": "INTC",
-        "disney": "DIS", "spotify": "SPOT", "uber": "UBER",
-        "airbnb": "ABNB", "palantir": "PLTR", "snowflake": "SNOW",
-        "coinbase": "COIN", "shopify": "SHOP", "salesforce": "CRM",
-        "adobe": "ADBE", "oracle": "ORCL", "ibm": "IBM",
-        "walmart": "WMT", "jpmorgan": "JPM", "goldman": "GS",
-        "boeing": "BA", "nike": "NKE", "coca-cola": "KO",
-        "pepsi": "PEP", "visa": "V", "mastercard": "MA",
-    }
-    
-    query_lower = query.lower()
-    for company, ticker in company_map.items():
-        if company in query_lower:
-            return ticker
-    
-    # Default fallback
-    return "AAPL"
+client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+MODEL = "gemini-2.5-flash"
+
+_TOOLS = types.Tool(function_declarations=GEMINI_TOOL_DECLARATIONS)
+_CONFIG = types.GenerateContentConfig(
+    tools=[_TOOLS],
+    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+    system_instruction=(
+        "You are the Research Agent in a multi-agent financial analysis system.\n"
+        "Your job:\n"
+        "1. Fetch real-time market data using get_market_data\n"
+        "2. Pull financial summary (revenue, margins, cash flow) using get_financial_summary\n"
+        "3. Compare against sector peers using compare_peers\n"
+        "4. Synthesize everything into a structured research brief\n\n"
+        "Call all three tools before writing your analysis. Use specific numbers "
+        "from the tool results. Flag any missing data. Keep the brief data-rich, "
+        "300-500 words."
+    ),
+)
 
 
-def research_node(state: FinState) -> dict:
-    """
-    LangGraph node for the Research Agent.
-    
-    1. Extracts stock symbol from the user query
-    2. Fetches market data via yfinance
-    3. Generates a research summary using Gemini
-    4. Writes market_data and research_summary to shared state
-    
-    Args:
-        state: Current FinState with the user query
-    
-    Returns:
-        Dict with state updates (market_data, research_summary)
-    """
+def run_research_agent(state: dict) -> dict:
+    start = time.time()
+    symbol = state["symbol"]
     query = state["query"]
-    symbol = extract_symbol(query)
-    
-    # Step 1: Fetch market data
-    market_data = fetch_market_data(symbol)
-    
-    if "error" in market_data:
-        return {
-            "market_data": market_data,
-            "research_summary": f"Unable to fetch market data: {market_data['error']}",
-            "messages": [{"role": "assistant", "content": f"Research Agent: Error - {market_data['error']}"}]
-        }
-    
-    # Step 2: Generate research summary using Gemini
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
-        temperature=0.3,
-        google_api_key=os.getenv("GOOGLE_API_KEY"),
-    )
-    
-    research_prompt = f"""You are a financial research analyst. Analyze the following market data 
-and provide a concise research summary for an investor.
 
-Stock: {market_data['company_name']} ({market_data['symbol']})
-Current Price: ${market_data['current_price']}
-P/E Ratio: {market_data.get('pe_ratio', 'N/A')}
-Market Cap: {format_large_number(market_data.get('market_cap'))}
-52-Week Range: ${market_data['fifty_two_week_low']} - ${market_data['fifty_two_week_high']}
-Sector: {market_data['sector']}
-Industry: {market_data['industry']}
+    contents = [
+        types.Content(
+            role="user",
+            parts=[types.Part(text=(
+                f"Analyze {symbol}. User query: {query}\n\n"
+                f"Use the available tools to gather market data, a financial summary, "
+                f"and a peer comparison for {symbol}, then write your research brief."
+            ))],
+        )
+    ]
 
-Recent Price Trend (last 5 days): {market_data['price_history'][-5:]}
+    tools_called = []
+    market_data = None
+    financial_summary = None
+    peer_comparison = None
+    final_text = ""
 
-User's Question: {query}
+    max_iterations = 10
+    for _ in range(max_iterations):
+        response = client.models.generate_content(
+            model=MODEL, contents=contents, config=_CONFIG
+        )
 
-Provide a structured analysis covering:
-1. Current market position (where is the price relative to 52-week range?)
-2. Valuation signal (is P/E ratio reasonable for this sector?)
-3. Recent momentum (what does the 5-day trend suggest?)
-4. Key factors to consider
+        candidate = response.candidates[0]
+        contents.append(candidate.content)
 
-Keep it concise (150-200 words). Be factual, not promotional."""
+        fcalls = response.function_calls or []
+        if not fcalls:
+            final_text = response.text or ""
+            break
 
-    response = llm.invoke(research_prompt)
-    research_summary = response.content
-    
+        response_parts = []
+        for fc in fcalls:
+            args = dict(fc.args) if fc.args else {}
+            tools_called.append({"tool": fc.name, "input": args})
+
+            result = execute_tool(fc.name, args)
+            try:
+                parsed = json.loads(result)
+                if fc.name == "get_market_data":
+                    market_data = parsed
+                elif fc.name == "get_financial_summary":
+                    financial_summary = parsed
+                elif fc.name == "compare_peers":
+                    peer_comparison = parsed
+            except (json.JSONDecodeError, TypeError):
+                parsed = {"raw": result}
+
+            response_parts.append(
+                types.Part.from_function_response(
+                    name=fc.name,
+                    response={"result": parsed},
+                )
+            )
+
+        contents.append(types.Content(role="user", parts=response_parts))
+
+    elapsed = time.time() - start
+
     return {
+        "research_summary": final_text,
         "market_data": market_data,
-        "research_summary": research_summary,
-        "messages": [{"role": "assistant", "content": f"Research Agent: Completed analysis for {symbol}"}]
+        "financial_summary": financial_summary,
+        "peer_comparison": peer_comparison,
+        "tools_called": tools_called,
+        "processing_time_seconds": round(elapsed, 2),
+        "model_used": MODEL,
     }
