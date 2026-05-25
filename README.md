@@ -1,8 +1,8 @@
 # FinSight AI — Multi-Agent Financial Intelligence
 
-A **LangGraph-powered multi-agent system** where specialized AI agents collaborate to deliver real-time financial analysis. Two agents — a Research Agent and a Risk Agent — share state, invoke tools, and produce auditable investment briefs through an orchestrated pipeline.
+A **LangGraph-powered multi-agent system** where specialized AI agents collaborate to deliver real-time financial analysis. Two agents — a Research Agent and a Risk Agent — share state, invoke real financial tools through a function-calling loop, and produce auditable investment briefs through an orchestrated pipeline.
 
-Built as a portfolio project demonstrating **agentic AI architecture, tool-use orchestration, and production ML system design** for financial applications.
+Built as a portfolio project demonstrating **agentic AI architecture, tool-use orchestration via the Model Context Protocol (MCP), and production ML system design** for financial applications.
 
 ---
 
@@ -23,10 +23,14 @@ User Query (natural language)
 │  Agent       │ │    Agent     │
 │              │ │              │
 │  Tools:      │ │  Tools:      │
-│  • yfinance  │ │  • Risk calc │
-│  • ChromaDB  │ │  • Scorer    │
+│  • market    │ │  • risk calc │
+│    data      │ │  • scorer    │
+│  • financials│ │              │
+│  • peers     │ │              │
 └──────┬───────┘ └──────┬───────┘
        │                │
+       │   Gemini function-calling loop
+       │   (tools also exposed via MCP server)
        ▼                ▼
 ┌─────────────────────────────┐
 │     Synthesis Node          │
@@ -41,17 +45,24 @@ User Query (natural language)
 
 1. **User submits a query** like "Should I invest in NVIDIA right now?"
 2. **LangGraph orchestrator** initializes shared state and routes to agents
-3. **Research Agent** extracts the stock symbol, fetches real-time market data via yfinance, and generates a research summary using Gemini
-4. **Risk Agent** reads market data from shared state, computes risk metrics (volatility, Sharpe ratio, max drawdown, beta), and generates a risk assessment
-5. **Synthesis Node** combines both agents' outputs into a structured investment brief with confidence level
-6. **FastAPI** returns the complete analysis as a JSON response
+3. **Research Agent** fetches real-time market data, financial summaries, and peer comparisons by calling tools through a Gemini function-calling loop, then writes a research brief
+4. **Risk Agent** reads context from shared state, calls the risk-metrics tool (volatility, Sharpe ratio, max drawdown, beta), and writes a risk assessment
+5. **Synthesis Node** combines both agents' outputs into a structured investment brief with a confidence level
+6. **FastAPI** returns the complete analysis as JSON
+
+### Tool-Use via MCP
+
+The four financial tools are exposed two ways from a single source of truth:
+
+- **In-process function calling** — the agents call tools directly through Gemini's function-calling loop
+- **MCP server** (`mcp_server/server.py`) — the same tools are served over the Model Context Protocol, so any MCP client (Claude Desktop, Cursor, the MCP Inspector) can invoke them
 
 ### Key Design Decisions
 
-- **Shared State over Direct Communication**: Agents communicate through a typed state object (`FinState`), not direct messages. This makes the pipeline testable, debuggable, and extensible.
-- **Sequential Execution**: Risk Agent depends on market data from Research Agent, so they run sequentially. Future: add parallel branches for independent data sources.
-- **Tool-Use Pattern**: Each agent has specific tools (yfinance, risk calculator) invoked during execution, following the agent → tool → state update pattern.
-- **Typed State Schema**: Using `TypedDict` with explicit fields ensures compile-time type safety and makes state flow visible in code review.
+- **Shared State over Direct Communication**: Agents communicate through a typed state object (`FinState`), not direct messages — testable, debuggable, extensible. `tools_called` uses an additive reducer so both agents accumulate their tool history without overwriting each other.
+- **Sequential Execution**: The Risk Agent benefits from the Research Agent's context, so they run sequentially.
+- **Explicit (manual) tool-use loop**: Automatic function calling is disabled so the agent loop is visible and structured tool outputs can be captured into state.
+- **Typed State Schema**: `TypedDict` with explicit fields makes state flow visible in code review.
 
 ---
 
@@ -59,14 +70,13 @@ User Query (natural language)
 
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
-| Agent Orchestration | **LangGraph** | Multi-agent state machine with tool-use |
-| LLM Backbone | **Google Gemini 2.0 Flash** | Research summaries, risk narratives, synthesis |
-| Vector Store | **ChromaDB** | Financial document retrieval (RAG) |
-| Market Data | **yfinance** | Real-time stock prices and fundamentals |
-| Backend API | **FastAPI** | REST endpoints serving the pipeline |
-| Embeddings | **sentence-transformers** | Semantic search for financial docs |
+| Agent Orchestration | **LangGraph** | Multi-agent state machine |
+| LLM Backbone | **Google Gemini 2.5 Flash** (`google-genai`) | Research, risk narratives, synthesis |
+| Tool Protocol | **MCP (FastMCP)** | Financial tools exposed over Model Context Protocol |
+| Market Data | **yfinance** | Real-time prices, fundamentals, financials |
+| Backend API | **FastAPI** | REST endpoint serving the pipeline |
+| Risk Analytics | **NumPy / Pandas** | Volatility, Sharpe ratio, drawdown, beta |
 | Containerization | **Docker** | Reproducible deployment |
-| Risk Analytics | **NumPy / Pandas** | Volatility, Sharpe ratio, drawdown |
 
 ---
 
@@ -74,26 +84,21 @@ User Query (natural language)
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.10+
 - Google Gemini API key ([get one here](https://aistudio.google.com/apikey))
 
 ### Installation
 
 ```bash
-# Clone the repository
 git clone https://github.com/ShivVIT2019/finsight-ai.git
 cd finsight-ai
 
-# Create virtual environment
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate  # Windows: venv\Scripts\activate
 
-# Install dependencies
 pip install -r requirements.txt
 
-# Configure environment
-cp .env.example .env
-# Edit .env and add your GOOGLE_API_KEY
+export GEMINI_API_KEY="your-key-here"   # never commit this
 ```
 
 ### Run the API Server
@@ -102,26 +107,28 @@ cp .env.example .env
 uvicorn api.main:app --reload --port 8000
 ```
 
-### Run a Quick Test
+### Run the MCP Server (optional, for MCP clients)
 
 ```bash
-python -m graph.pipeline
+pip install -r mcp_server/requirements.txt
+python mcp_server/server.py
+# then connect the MCP Inspector to http://localhost:8001/mcp
 ```
 
 ### API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/analyze` | Run full multi-agent analysis |
-| `GET` | `/api/quote/{symbol}` | Quick market data lookup |
-| `GET` | `/api/health` | Health check |
+| `POST` | `/analyze` | Run full multi-agent analysis |
+| `GET` | `/healthz` | Health check |
+| `GET` | `/` | Service info |
 
 ### Example Request
 
 ```bash
-curl -X POST http://localhost:8000/api/analyze \
+curl -X POST http://localhost:8000/analyze \
   -H "Content-Type: application/json" \
-  -d '{"query": "Should I invest in NVIDIA right now?"}'
+  -d '{"query": "Should I invest in NVIDIA right now?", "symbol": "NVDA"}'
 ```
 
 ### Example Response
@@ -129,13 +136,13 @@ curl -X POST http://localhost:8000/api/analyze \
 ```json
 {
   "query": "Should I invest in NVIDIA right now?",
-  "final_answer": "## Investment Analysis: NVDA\n\n**Overall Assessment**: ...",
-  "confidence": "High",
+  "symbol": "NVDA",
+  "final_answer": "## Investment Analysis: NVDA ...",
+  "confidence": "Medium",
   "market_data": {
     "symbol": "NVDA",
     "current_price": 135.42,
     "pe_ratio": 65.3,
-    "market_cap": 3320000000000,
     "sector": "Technology"
   },
   "risk_metrics": {
@@ -145,7 +152,13 @@ curl -X POST http://localhost:8000/api/analyze \
     "risk_tier": "Aggressive",
     "risk_score": 72.5
   },
-  "processing_time_seconds": 8.34
+  "tools_called": [
+    {"tool": "get_market_data"},
+    {"tool": "get_financial_summary"},
+    {"tool": "compare_peers"},
+    {"tool": "calculate_risk_metrics"}
+  ],
+  "processing_time_seconds": 12.7
 }
 ```
 
@@ -154,22 +167,8 @@ curl -X POST http://localhost:8000/api/analyze \
 ## Docker Deployment
 
 ```bash
-# Build
 docker build -t finsight-ai .
-
-# Run
-docker run -p 8000:8000 --env-file .env finsight-ai
-```
-
-### Deploy to Google Cloud Run
-
-```bash
-gcloud builds submit --tag gcr.io/YOUR_PROJECT/finsight-ai
-gcloud run deploy finsight-ai \
-  --image gcr.io/YOUR_PROJECT/finsight-ai \
-  --platform managed \
-  --allow-unauthenticated \
-  --set-env-vars GOOGLE_API_KEY=your_key_here
+docker run -p 8000:8000 -e GEMINI_API_KEY=your_key_here finsight-ai
 ```
 
 ---
@@ -179,22 +178,19 @@ gcloud run deploy finsight-ai \
 ```
 finsight-ai/
 ├── agents/
-│   ├── research_agent.py    # Market data retrieval + LLM analysis
-│   ├── risk_agent.py        # Risk metrics computation + assessment
-│   └── tools.py             # Shared tools (yfinance, risk calculator)
+│   ├── research_agent.py    # Gemini function-calling loop: market data, financials, peers
+│   ├── risk_agent.py        # Gemini function-calling loop: risk metrics + assessment
+│   └── mcp_tools.py         # Tool schemas + real yfinance implementations (shared)
 ├── graph/
-│   ├── state.py             # Typed shared state schema (FinState)
-│   └── pipeline.py          # LangGraph graph definition + orchestration
-├── vectorstore/
-│   ├── ingest.py            # Ingest financial docs into ChromaDB
-│   └── retriever.py         # Query ChromaDB for relevant context
+│   ├── state.py             # Typed shared state schema (FinState) with reducer
+│   └── pipeline.py          # LangGraph definition + orchestration + synthesis
+├── mcp_server/
+│   ├── server.py            # FastMCP server exposing the financial tools over MCP
+│   └── requirements.txt
 ├── api/
 │   └── main.py              # FastAPI endpoints
-├── data/
-│   └── financial_docs/      # Sample financial documents for RAG
 ├── Dockerfile
 ├── requirements.txt
-├── .env.example
 └── README.md
 ```
 
@@ -205,27 +201,27 @@ finsight-ai/
 | Metric | What It Measures | How It's Calculated |
 |--------|-----------------|-------------------|
 | **Volatility** | Price unpredictability | Annualized std dev of daily returns |
-| **Sharpe Ratio** | Risk-adjusted return | (Return - Risk-free rate) / Volatility |
-| **Max Drawdown** | Worst peak-to-trough decline | Max(peak - trough) / peak |
-| **Beta** | Market sensitivity | Stock volatility / Market volatility |
-| **Risk Score** | Composite risk (0-100) | Weighted combination of above metrics |
+| **Sharpe Ratio** | Risk-adjusted return | (Return − Risk-free rate) / Volatility |
+| **Max Drawdown** | Worst peak-to-trough decline | Max(peak − trough) / peak |
+| **Beta** | Market sensitivity | Covariance with SPY / SPY variance |
+| **Risk Score** | Composite risk (0–100) | Weighted combination of the above |
 
 ---
 
 ## Roadmap
 
-- [x] Week 1: LangGraph multi-agent pipeline with Research + Risk agents
-- [ ] Week 2: Swap Gemini for Claude API + add MCP server for tool-use
-- [ ] Week 3: Deploy on AWS Lambda + add Streamlit dashboard
-- [ ] Week 4: Fine-tune small LLM with LoRA for financial Q&A
+- [x] Week 1: LangGraph multi-agent pipeline with Research + Risk agents (Gemini)
+- [x] Week 2: Function-calling tool-use + MCP server exposing financial tools
+- [ ] Week 3: Deploy on Cloud Run + add Streamlit dashboard
+- [ ] Week 4: Add RAG over financial filings (ChromaDB) for document-grounded Q&A
 
 ---
 
 ## Resume Bullets
 
-> Architected multi-agent LangGraph pipeline with two specialized AI agents (Research + Risk) collaborating through shared state for real-time financial analysis; integrated yfinance market data, ChromaDB RAG retrieval, and composite risk-scoring across agent boundaries
->
-> Built FastAPI backend serving multi-agent financial intelligence system with real-time market data ingestion, risk metrics computation (volatility, Sharpe ratio, max drawdown), and LLM-powered investment brief synthesis
+> Architected a multi-agent LangGraph pipeline with two specialized AI agents (Research + Risk) collaborating through typed shared state; agents invoke real financial tools (live market data, risk metrics, peer comparison) via a Gemini function-calling loop, producing auditable investment briefs
+
+> Built a Model Context Protocol (MCP) server with FastMCP exposing four financial tools, enabling tool-use both in-process and from any MCP client; backed by a FastAPI service and composite risk scoring (volatility, Sharpe ratio, max drawdown, beta)
 
 ---
 
