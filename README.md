@@ -1,5 +1,8 @@
 # FinSight AI — Multi-Agent Financial Intelligence
 
+> 🟢 **Live demo:** https://finsight-ai-4lfjlhbw2q-uc.a.run.app — try `POST /analyze` with a stock symbol.
+
+
 A **LangGraph-powered multi-agent system** where specialized AI agents collaborate to deliver real-time financial analysis. Two agents — a Research Agent and a Risk Agent — share state, invoke real financial tools through a function-calling loop, and produce auditable investment briefs through an orchestrated pipeline.
 
 Built as a portfolio project demonstrating **agentic AI architecture, tool-use orchestration via the Model Context Protocol (MCP), and production ML system design** for financial applications.
@@ -220,7 +223,7 @@ finsight-ai/
 - [x] Week 1: LangGraph multi-agent pipeline with Research + Risk agents (Gemini)
 - [x] Week 2: Function-calling tool-use + MCP server exposing financial tools
 - [x] Week 3a: Streamlit dashboard over the pipeline
-- [ ] Week 3b: Deploy on Cloud Run (Secret Manager for the API key, timeout config)
+- [x] Week 3b: Deployed on Cloud Run with Secret Manager for the Gemini API key (300s timeout, 2GB/2vCPU)
 - [ ] Week 4: Add RAG over financial filings (ChromaDB) for document-grounded Q&A
 
 ---
@@ -230,6 +233,8 @@ finsight-ai/
 > Architected a multi-agent LangGraph pipeline with two specialized AI agents (Research + Risk) collaborating through typed shared state; agents invoke real financial tools (live market data, risk metrics, peer comparison) via a Gemini function-calling loop, producing auditable investment briefs
 
 > Built a Model Context Protocol (MCP) server with FastMCP exposing four financial tools, enabling tool-use both in-process and from any MCP client; backed by a FastAPI service and composite risk scoring (volatility, Sharpe ratio, max drawdown, beta)
+
+> Deployed the FastAPI service to Google Cloud Run with the Gemini API key managed via Secret Manager (mounted at runtime as an env var, never baked into the image); configured 300s request timeout and 2GB / 2 vCPU for the multi-agent workload, with the deployment provisioned from a single `gcloud run deploy --source` command.
 
 ---
 
