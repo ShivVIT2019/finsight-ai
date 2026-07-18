@@ -18,7 +18,7 @@ from agents.research_agent import run_research_agent
 from agents.risk_agent import run_risk_agent
 
 
-client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+client = genai.Client(vertexai=True, project="project-13b1a293-3e33-4184-8d9", location="us-central1")
 MODEL = "gemini-2.5-flash"
 
 

@@ -19,7 +19,7 @@ from google.genai import types
 from agents.mcp_tools import GEMINI_TOOL_DECLARATIONS, execute_tool
 
 
-client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+client = genai.Client(vertexai=True, project="project-13b1a293-3e33-4184-8d9", location="us-central1")
 MODEL = "gemini-2.5-flash"
 
 _TOOLS = types.Tool(function_declarations=GEMINI_TOOL_DECLARATIONS)

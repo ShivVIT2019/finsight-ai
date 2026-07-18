@@ -1,22 +1,30 @@
 """
-FinSight AI — Streamlit Dashboard
-Interactive UI over the multi-agent analysis pipeline.
+FinSight AI — Streamlit Dashboard (thin client)
+Calls the deployed FinSight AI API instead of running the pipeline in-process.
 
-Run with:
+Why a thin client:
+- The Gemini API key lives only in the API's Secret Manager, not here
+- This container is small (just Streamlit + requests), so builds are fast
+- Mirrors a real product architecture: frontend talks to backend over HTTP
+
+Configuration:
+    Set FINSIGHT_API_URL to point at the deployed API
+    (defaults to the live Cloud Run service)
+
+Run locally:
     streamlit run dashboard/app.py
-
-Requires GEMINI_API_KEY in the environment.
 """
 
 import os
-import sys
 
-# Make the project root importable when Streamlit runs this file directly
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
+import requests
 import streamlit as st
 
-from graph.pipeline import run_analysis
+
+# Live Cloud Run API by default; override with env var for local testing.
+DEFAULT_API = "https://finsight-ai-4lfjlhbw2q-uc.a.run.app"
+API_URL = os.environ.get("FINSIGHT_API_URL", DEFAULT_API).rstrip("/")
+REQUEST_TIMEOUT = 120  # seconds; matches the API's 300s ceiling with margin
 
 
 st.set_page_config(page_title="FinSight AI", page_icon="📈", layout="wide")
@@ -27,14 +35,18 @@ st.caption(
     "collaborate through a LangGraph pipeline, calling real market-data tools."
 )
 
-# ── Sidebar: API key status + about ───────────────────────────────────────────
+# ── Sidebar: backend status + about ───────────────────────────────────────────
 with st.sidebar:
-    st.header("Status")
-    if os.environ.get("GEMINI_API_KEY"):
-        st.success("GEMINI_API_KEY is set")
-    else:
-        st.error("GEMINI_API_KEY not set")
-        st.code("export GEMINI_API_KEY='your-key'", language="bash")
+    st.header("Backend")
+    st.code(API_URL, language=None)
+    try:
+        r = requests.get(f"{API_URL}/", timeout=10)
+        if r.status_code == 200:
+            st.success("API is healthy")
+        else:
+            st.warning(f"API returned {r.status_code}")
+    except requests.RequestException as e:
+        st.error(f"API unreachable: {e}")
 
     st.divider()
     st.markdown(
@@ -59,21 +71,45 @@ with col_s:
 
 run = st.button("Analyze", type="primary", use_container_width=True)
 
-# ── Run pipeline ────────────────────────────────────────────────────────────────
+# ── Run analysis (via API) ─────────────────────────────────────────────────────
 if run:
-    if not os.environ.get("GEMINI_API_KEY"):
-        st.error("Set GEMINI_API_KEY in your environment before running.")
-        st.stop()
     if not query.strip():
         st.warning("Please enter a question.")
         st.stop()
 
-    with st.spinner("Agents are analyzing — fetching data, computing risk, synthesizing..."):
+    with st.spinner(
+        "Agents are analyzing — fetching data, computing risk, synthesizing... "
+        "First request may take ~40s while the backend warms up."
+    ):
         try:
-            result = run_analysis(query=query.strip(), symbol=symbol.strip())
-        except Exception as e:
-            st.error(f"Analysis failed: {e}")
+            resp = requests.post(
+                f"{API_URL}/analyze",
+                json={"query": query.strip(), "symbol": symbol.strip()},
+                timeout=REQUEST_TIMEOUT,
+            )
+        except requests.Timeout:
+            st.error(
+                f"Request timed out after {REQUEST_TIMEOUT}s. "
+                "Try again — cold starts can be slow."
+            )
             st.stop()
+        except requests.RequestException as e:
+            st.error(f"Failed to reach the API: {e}")
+            st.stop()
+
+    if resp.status_code != 200:
+        st.error(f"API returned {resp.status_code}: {resp.text[:500]}")
+        st.stop()
+
+    try:
+        result = resp.json()
+    except ValueError:
+        st.error("API response was not valid JSON.")
+        st.stop()
+
+    if isinstance(result, dict) and result.get("error"):
+        st.error(result["error"])
+        st.stop()
 
     # ── Top metrics row ──────────────────────────────────────────────────────────
     md = result.get("market_data") or {}
@@ -90,8 +126,10 @@ if run:
     # ── Final brief ────────────────────────────────────────────────────────────
     st.markdown("### Investment Brief")
     confidence = result.get("confidence", "—")
-    st.caption(f"Confidence: **{confidence}**  ·  "
-               f"Processing time: {result.get('processing_time_seconds', '—')}s")
+    st.caption(
+        f"Confidence: **{confidence}**  ·  "
+        f"Processing time: {result.get('processing_time_seconds', '—')}s"
+    )
     st.markdown(result.get("final_answer") or "_No brief generated._")
 
     # ── Detail panels ───────────────────────────────────────────────────────────
@@ -128,5 +166,5 @@ if run:
         st.markdown(result.get("risk_assessment") or "_None_")
 
     # ── Raw state (debug) ───────────────────────────────────────────────────────
-    with st.expander("Raw pipeline state (debug)"):
+    with st.expander("Raw API response (debug)"):
         st.json(result)
