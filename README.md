@@ -1,6 +1,10 @@
 # FinSight AI — Multi-Agent Financial Intelligence
 
-> 🟢 **Live demo:** https://finsight-ai-4lfjlhbw2q-uc.a.run.app — try `POST /analyze` with a stock symbol.
+> 🟢 **Live demo:** 
+> - Dashboard: https://finsight-ai-dashboard-727430679800.us-central1.run.app (interactive UI)
+> - API: https://finsight-ai-4lfjlhbw2q-uc.a.run.app/docs (Swagger, try `POST /analyze`)
+>
+> First request may take ~30–40s (Cloud Run scale-to-zero cold start).
 
 
 A **LangGraph-powered multi-agent system** where specialized AI agents collaborate to deliver real-time financial analysis. Two agents — a Research Agent and a Risk Agent — share state, invoke real financial tools through a function-calling loop, and produce auditable investment briefs through an orchestrated pipeline.
@@ -223,7 +227,8 @@ finsight-ai/
 - [x] Week 1: LangGraph multi-agent pipeline with Research + Risk agents (Gemini)
 - [x] Week 2: Function-calling tool-use + MCP server exposing financial tools
 - [x] Week 3a: Streamlit dashboard over the pipeline
-- [x] Week 3b: Deployed on Cloud Run with Secret Manager for the Gemini API key (300s timeout, 2GB/2vCPU)
+- [x] Week 3b: Deployed FastAPI + Streamlit dashboard on Cloud Run (300s timeout, 2GB/2vCPU)
+- [x] Week 3c: Migrated from AI Studio API key to Vertex AI service-account auth (no rate limits, no secret to manage)
 - [ ] Week 4: Add RAG over financial filings (ChromaDB) for document-grounded Q&A
 
 ---
@@ -235,6 +240,11 @@ finsight-ai/
 > Built a Model Context Protocol (MCP) server with FastMCP exposing four financial tools, enabling tool-use both in-process and from any MCP client; backed by a FastAPI service and composite risk scoring (volatility, Sharpe ratio, max drawdown, beta)
 
 > Deployed the FastAPI service to Google Cloud Run with the Gemini API key managed via Secret Manager (mounted at runtime as an env var, never baked into the image); configured 300s request timeout and 2GB / 2 vCPU for the multi-agent workload, with the deployment provisioned from a single `gcloud run deploy --source` command.
+
+> Migrated the deployed pipeline from an API-key backend (AI Studio Gemini) to Vertex AI with service-account (Application Default Credentials) authentication; eliminated the free-tier 20-requests/day cap, removed the Secret Manager mount, and cut the interview-demo failure mode where recruiter clicks hit rate limits.
+
+
+
 
 ---
 
