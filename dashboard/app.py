@@ -9,6 +9,8 @@ import os
 import requests
 import streamlit as st
 from streamlit_searchbox import st_searchbox
+import plotly.graph_objects as go
+import pandas as pd
 
 
 def search_yahoo_tickers(query: str) -> list:
@@ -61,6 +63,110 @@ def _md_safe(text: str) -> str:
     if not text:
         return text
     return text.replace("$", "\\$")
+
+
+# ── CHART HELPERS ──────────────────────────────────────────────────────────────
+
+def _risk_gauge(score, tier):
+    """Semicircle gauge showing composite risk score (0-100)."""
+    if score is None:
+        return None
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=float(score),
+        number={"font": {"size": 42, "color": "white"}},
+        title={"text": f"Risk Tier: <b>{tier or '—'}</b>",
+               "font": {"size": 14, "color": "#aaa"}},
+        gauge={
+            "axis": {"range": [0, 100], "tickcolor": "#666",
+                     "tickfont": {"color": "#888"}},
+            "bar": {"color": "rgba(0,0,0,0)", "thickness": 0},
+            "bgcolor": "rgba(0,0,0,0)",
+            "borderwidth": 0,
+            "steps": [
+                {"range": [0, 25],  "color": "#0e7d3f"},   # green – conservative
+                {"range": [25, 50], "color": "#c8a415"},   # yellow – moderate
+                {"range": [50, 75], "color": "#c96419"},   # orange – aggressive
+                {"range": [75, 100],"color": "#a11f1f"},   # red – speculative
+            ],
+            "threshold": {
+                "line": {"color": "white", "width": 4},
+                "thickness": 0.75,
+                "value": float(score),
+            },
+        },
+    ))
+    fig.update_layout(
+        height=220,
+        margin=dict(l=10, r=10, t=30, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        font={"color": "white"},
+    )
+    return fig
+
+
+def _price_history_chart(recent_prices, symbol):
+    """Line chart of the last few closes."""
+    if not recent_prices:
+        return None
+    df = pd.DataFrame(recent_prices)
+    if "date" not in df or "close" not in df:
+        return None
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date")
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df["date"], y=df["close"],
+        mode="lines+markers",
+        line=dict(color="#4ea1ff", width=3),
+        marker=dict(size=8, color="#4ea1ff"),
+        hovertemplate="%{x|%b %d}<br>$%{y:.2f}<extra></extra>",
+    ))
+    fig.update_layout(
+        title=dict(text=f"{symbol} — recent closes", font=dict(size=14, color="#ddd")),
+        height=260,
+        margin=dict(l=10, r=10, t=40, b=30),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(showgrid=False, color="#888"),
+        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.08)",
+                   color="#888", tickprefix="$"),
+        showlegend=False,
+    )
+    return fig
+
+
+def _peer_bar_chart(peer_comparison, symbol):
+    """Grouped bar chart comparing PE, profit margin, revenue growth across peers."""
+    if not peer_comparison or not peer_comparison.get("comparisons"):
+        return None
+    peers = peer_comparison["comparisons"]
+    if len(peers) < 2:
+        return None
+    symbols = [p.get("symbol", "?") for p in peers]
+    pe = [p.get("pe_ratio") for p in peers]
+    margin = [p.get("profit_margin") for p in peers]
+    growth = [p.get("revenue_growth") for p in peers]
+    colors_pe = ["#4ea1ff" if s == symbol else "#2f4a6b" for s in symbols]
+    colors_pm = ["#7bd88f" if s == symbol else "#2f5c3f" for s in symbols]
+    colors_gr = ["#f2a65a" if s == symbol else "#6b4a2c" for s in symbols]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name="P/E ratio", x=symbols, y=pe, marker_color=colors_pe))
+    fig.add_trace(go.Bar(name="Profit margin %", x=symbols, y=margin, marker_color=colors_pm))
+    fig.add_trace(go.Bar(name="Revenue growth %", x=symbols, y=growth, marker_color=colors_gr))
+    fig.update_layout(
+        title=dict(text=f"{symbol} vs peers", font=dict(size=14, color="#ddd")),
+        barmode="group",
+        height=300,
+        margin=dict(l=10, r=10, t=40, b=30),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(showgrid=False, color="#888"),
+        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.08)", color="#888"),
+        legend=dict(font=dict(color="#ccc"), bgcolor="rgba(0,0,0,0)"),
+    )
+    return fig
+
 
 st.set_page_config(
     page_title="FinSight AI",
@@ -274,6 +380,24 @@ else:
     m2.metric("P/E", md.get("pe_ratio", "—"))
     m3.metric("Risk Score", rm.get("risk_score", "—"))
     m4.metric("Risk Tier", rm.get("risk_tier", "—"))
+
+    st.markdown("")
+
+    # ── Charts row: risk gauge (left) + price history (right) ────────────────
+    chart_left, chart_right = st.columns([1, 2])
+    with chart_left:
+        gauge = _risk_gauge(rm.get("risk_score"), rm.get("risk_tier"))
+        if gauge is not None:
+            st.plotly_chart(gauge, use_container_width=True, config={"displayModeBar": False})
+    with chart_right:
+        price_fig = _price_history_chart(md.get("recent_prices"), result.get("symbol", ""))
+        if price_fig is not None:
+            st.plotly_chart(price_fig, use_container_width=True, config={"displayModeBar": False})
+
+    # ── Peer comparison row ──────────────────────────────────────────────────
+    peer_fig = _peer_bar_chart(result.get("peer_comparison"), result.get("symbol", ""))
+    if peer_fig is not None:
+        st.plotly_chart(peer_fig, use_container_width=True, config={"displayModeBar": False})
 
     st.markdown("---")
 
