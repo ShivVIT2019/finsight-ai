@@ -9,6 +9,7 @@ tools over MCP for any external MCP client.
 import json
 import os
 import time
+from datetime import date
 
 from google import genai
 from langgraph.graph import StateGraph, END
@@ -47,7 +48,7 @@ def synthesize(state: FinState) -> dict:
     market_data = state.get("market_data", {}) or {}
     symbol = state["symbol"]
 
-    prompt = f"""You are the Synthesis Agent. Combine the research and risk analyses
+    prompt = f"""You are the Synthesis Agent. Today's date is {date.today().isoformat()}. Use this exact date if you reference the analysis date; do not invent one. Combine the research and risk analyses
 below into a final investment brief for {symbol}.
 
 ## Research Agent Output
