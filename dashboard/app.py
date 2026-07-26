@@ -464,31 +464,26 @@ else:
 
     st.markdown("")
 
-    # ── Charts row: risk gauge (left) + price history (right) ────────────────
-    chart_left, chart_right = st.columns([1, 2])
-    with chart_left:
-        gauge = _risk_gauge(rm.get("risk_score"), rm.get("risk_tier"))
-        if gauge is not None:
-            st.plotly_chart(gauge, use_container_width=True, config={"displayModeBar": False})
-    with chart_right:
-        price_fig = _price_history_chart(md.get("recent_prices"), result.get("symbol", ""))
-        if price_fig is not None:
-            st.plotly_chart(price_fig, use_container_width=True, config={"displayModeBar": False})
+    # ── Tabbed results view ─────────────────────────────────────────────────
+    tab_overview, tab_risk, tab_peers, tab_details = st.tabs(
+        ["📊 Overview", "⚖️ Risk", "🤝 Peers", "🔎 Details"]
+    )
 
-    # ── Peer comparison row ──────────────────────────────────────────────────
-    peer_fig = _peer_bar_chart(result.get("peer_comparison"), result.get("symbol", ""))
-    if peer_fig is not None:
-        st.plotly_chart(peer_fig, use_container_width=True, config={"displayModeBar": False})
+    with tab_overview:
+        chart_left, chart_right = st.columns([1, 2])
+        with chart_left:
+            gauge = _risk_gauge(rm.get("risk_score"), rm.get("risk_tier"))
+            if gauge is not None:
+                st.plotly_chart(gauge, use_container_width=True, config={"displayModeBar": False})
+        with chart_right:
+            price_fig = _price_history_chart(md.get("recent_prices"), result.get("symbol", ""))
+            if price_fig is not None:
+                st.plotly_chart(price_fig, use_container_width=True, config={"displayModeBar": False})
+        st.markdown("---")
+        st.markdown(_md_safe(result.get("final_answer") or "_No brief generated._"))
 
-    st.markdown("---")
-
-    # Investment brief (the model returns its own H2 heading)
-    st.markdown(_md_safe(result.get("final_answer") or "_No brief generated._"))
-
-    st.markdown("---")
-
-    # Detail panels
-    with st.expander("Risk Metrics (detail)"):
+    with tab_risk:
+        st.markdown("#### Risk Metrics")
         st.json({
             "volatility": rm.get("volatility"),
             "sharpe_ratio": rm.get("sharpe_ratio"),
@@ -498,17 +493,28 @@ else:
             "risk_score": rm.get("risk_score"),
             "risk_tier": rm.get("risk_tier"),
         })
-
-    with st.expander("Tools Called (tool-use trace)"):
-        tools = result.get("tools_called") or []
-        for i, t in enumerate(tools, 1):
-            st.write(f"{i}. `{t.get('tool')}`  {t.get('input', {})}")
-
-    with st.expander("Research Agent output"):
-        st.markdown(_md_safe(result.get("research_summary") or "_None_"))
-
-    with st.expander("Risk Agent output"):
+        st.markdown("---")
+        st.markdown("#### Risk Agent Narrative")
         st.markdown(_md_safe(result.get("risk_assessment") or "_None_"))
 
-    with st.expander("Raw API response (debug)"):
-        st.json(result)
+    with tab_peers:
+        peer_fig = _peer_bar_chart(result.get("peer_comparison"), result.get("symbol", ""))
+        if peer_fig is not None:
+            st.plotly_chart(peer_fig, use_container_width=True, config={"displayModeBar": False})
+        else:
+            st.info("No peer comparison data available for this ticker.")
+        st.markdown("---")
+        st.markdown("#### Research Agent Narrative")
+        st.markdown(_md_safe(result.get("research_summary") or "_None_"))
+
+    with tab_details:
+        st.markdown("#### Tools Called (tool-use trace)")
+        tools = result.get("tools_called") or []
+        if tools:
+            for i, t in enumerate(tools, 1):
+                st.write(f"{i}. `{t.get('tool')}`  {t.get('input', {})}")
+        else:
+            st.caption("No tool calls recorded.")
+        st.markdown("---")
+        with st.expander("Raw API response (JSON)"):
+            st.json(result)
