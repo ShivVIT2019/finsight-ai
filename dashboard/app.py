@@ -5,6 +5,7 @@ main workspace, welcome state before first analysis.
 """
 
 import os
+import re
 
 import requests
 import streamlit as st
@@ -166,6 +167,84 @@ def _peer_bar_chart(peer_comparison, symbol):
         legend=dict(font=dict(color="#ccc"), bgcolor="rgba(0,0,0,0)"),
     )
     return fig
+
+
+
+# ── VERDICT CARD ──────────────────────────────────────────────────────────────
+
+_VERDICT_TABLE = {
+    "BUY":  ("Bullish",  "#0e7d3f", "🟢"),
+    "SELL": ("Bearish",  "#a11f1f", "🔴"),
+    "HOLD": ("Neutral",  "#c8a415", "🟡"),
+}
+
+
+def _extract_verdict(final_answer):
+    """
+    Parse the model's brief for a BUY/HOLD/SELL keyword in the Recommendation
+    section. Returns (stance_label, color_hex, emoji) or None if not found.
+    """
+    if not final_answer:
+        return None
+    text = final_answer.upper()
+
+    # Look in the recommendation section first (more reliable)
+    rec_match = re.search(r"RECOMMENDATION[^A-Z]{0,40}(BUY|HOLD|SELL)", text)
+    keyword = rec_match.group(1) if rec_match else None
+
+    # Fallback: search the whole text for a bolded verdict
+    if not keyword:
+        for kw in ("STRONG BUY", "STRONG SELL", "BUY", "HOLD", "SELL"):
+            if f"**{kw}**" in text or f"{kw} WITH" in text:
+                keyword = kw.replace("STRONG ", "")
+                break
+
+    if not keyword:
+        return None
+    return _VERDICT_TABLE.get(keyword)
+
+
+def _render_verdict_card(final_answer, confidence):
+    """Renders a color-coded verdict card at the top of the results view."""
+    parsed = _extract_verdict(final_answer)
+    if parsed is None:
+        return
+    stance, color, emoji = parsed
+    conf = confidence or "—"
+
+    st.markdown(
+        f"""
+        <div style="
+            border: 1px solid {color};
+            border-left: 6px solid {color};
+            border-radius: 8px;
+            padding: 14px 18px;
+            margin: 4px 0 12px 0;
+            background: rgba(255,255,255,0.02);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+        ">
+            <div>
+                <div style="font-size: 12px; color:#888; letter-spacing: 0.5px;">MODEL VIEW</div>
+                <div style="font-size: 26px; font-weight: 600; color:{color}; line-height: 1.1;">
+                    {emoji} {stance}
+                </div>
+            </div>
+            <div style="text-align: right;">
+                <div style="font-size: 12px; color:#888;">CONFIDENCE</div>
+                <div style="font-size: 20px; font-weight: 500; color:#ddd;">{conf}</div>
+            </div>
+        </div>
+        <div style="font-size: 11px; color:#666; margin: -4px 0 12px 0;">
+            AI-generated view based on live market data and quantitative risk metrics.
+            Not financial advice — for research and demonstration purposes only.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 st.set_page_config(
@@ -375,6 +454,8 @@ else:
             st.rerun()
 
     # Metrics row
+    _render_verdict_card(result.get("final_answer"), result.get("confidence"))
+
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Price", f"${md.get('current_price', '—')}")
     m2.metric("P/E", md.get("pe_ratio", "—"))
