@@ -7,6 +7,7 @@ and produce a structured risk assessment.
 import json
 import os
 import time
+from datetime import date
 
 from google import genai
 from google.genai import types
@@ -22,7 +23,9 @@ _CONFIG = types.GenerateContentConfig(
     tools=[_TOOLS],
     automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
     system_instruction=(
-        "You are the Risk Agent in a multi-agent financial analysis system.\n"
+        f"You are the Risk Agent in a multi-agent financial analysis system.\n"
+        f"Today's date is {date.today().isoformat()}. Use this exact date whenever "
+        f"you reference the analysis date; do not invent a date.\n"
         "Your job:\n"
         "1. Calculate risk metrics using calculate_risk_metrics\n"
         "2. Optionally fetch market data using get_market_data for price context\n"

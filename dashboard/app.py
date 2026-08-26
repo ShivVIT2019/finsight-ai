@@ -115,13 +115,16 @@ def _price_history_chart(recent_prices, symbol):
         return None
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date")
+    # Use pre-formatted date strings on a category axis so plotly doesn't add
+    # the meaningless "00:00 / 12:00" hour ticks between daily closes.
+    date_labels = df["date"].dt.strftime("%b %d").tolist()
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=df["date"], y=df["close"],
+        x=date_labels, y=df["close"],
         mode="lines+markers",
         line=dict(color="#4ea1ff", width=3),
         marker=dict(size=8, color="#4ea1ff"),
-        hovertemplate="%{x|%b %d}<br>$%{y:.2f}<extra></extra>",
+        hovertemplate="%{x}<br>$%{y:.2f}<extra></extra>",
     ))
     fig.update_layout(
         title=dict(text=f"{symbol} — recent closes", font=dict(size=14, color="#ddd")),
@@ -129,7 +132,7 @@ def _price_history_chart(recent_prices, symbol):
         margin=dict(l=10, r=10, t=40, b=30),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(showgrid=False, color="#888"),
+        xaxis=dict(showgrid=False, color="#888", type="category"),
         yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.08)",
                    color="#888", tickprefix="$"),
         showlegend=False,
@@ -138,34 +141,75 @@ def _price_history_chart(recent_prices, symbol):
 
 
 def _peer_bar_chart(peer_comparison, symbol):
-    """Grouped bar chart comparing PE, profit margin, revenue growth across peers."""
+    """
+    Side-by-side subplots: P/E ratio on the left (its own scale, 0-~50),
+    profit margin % and revenue growth % on the right (percent scale, 0-~100).
+    Splitting the axes stops P/E numbers from visually dwarfing / clashing with
+    the percent metrics on a shared scale.
+    """
     if not peer_comparison or not peer_comparison.get("comparisons"):
         return None
     peers = peer_comparison["comparisons"]
     if len(peers) < 2:
         return None
+
+    from plotly.subplots import make_subplots
+
     symbols = [p.get("symbol", "?") for p in peers]
-    pe = [p.get("pe_ratio") for p in peers]
-    margin = [p.get("profit_margin") for p in peers]
-    growth = [p.get("revenue_growth") for p in peers]
-    colors_pe = ["#4ea1ff" if s == symbol else "#2f4a6b" for s in symbols]
-    colors_pm = ["#7bd88f" if s == symbol else "#2f5c3f" for s in symbols]
-    colors_gr = ["#f2a65a" if s == symbol else "#6b4a2c" for s in symbols]
-    fig = go.Figure()
-    fig.add_trace(go.Bar(name="P/E ratio", x=symbols, y=pe, marker_color=colors_pe))
-    fig.add_trace(go.Bar(name="Profit margin %", x=symbols, y=margin, marker_color=colors_pm))
-    fig.add_trace(go.Bar(name="Revenue growth %", x=symbols, y=growth, marker_color=colors_gr))
+    pe      = [p.get("pe_ratio")       for p in peers]
+    margin  = [p.get("profit_margin")  for p in peers]
+    growth  = [p.get("revenue_growth") for p in peers]
+
+    def _tinted(base, dim, syms):
+        return [base if s == symbol else dim for s in syms]
+
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=("P/E Ratio", "Margin & Growth (%)"),
+        horizontal_spacing=0.12,
+    )
+
+    fig.add_trace(
+        go.Bar(
+            name="P/E ratio", x=symbols, y=pe,
+            marker_color=_tinted("#4ea1ff", "#2f4a6b", symbols),
+            hovertemplate="%{x}<br>P/E %{y:.2f}<extra></extra>",
+        ),
+        row=1, col=1,
+    )
+    fig.add_trace(
+        go.Bar(
+            name="Profit margin %", x=symbols, y=margin,
+            marker_color=_tinted("#7bd88f", "#2f5c3f", symbols),
+            hovertemplate="%{x}<br>Margin %{y:.1f}%<extra></extra>",
+        ),
+        row=1, col=2,
+    )
+    fig.add_trace(
+        go.Bar(
+            name="Revenue growth %", x=symbols, y=growth,
+            marker_color=_tinted("#f2a65a", "#6b4a2c", symbols),
+            hovertemplate="%{x}<br>Growth %{y:.1f}%<extra></extra>",
+        ),
+        row=1, col=2,
+    )
+
     fig.update_layout(
         title=dict(text=f"{symbol} vs peers", font=dict(size=14, color="#ddd")),
         barmode="group",
-        height=300,
-        margin=dict(l=10, r=10, t=40, b=30),
+        height=320,
+        margin=dict(l=10, r=10, t=60, b=30),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(showgrid=False, color="#888"),
-        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.08)", color="#888"),
-        legend=dict(font=dict(color="#ccc"), bgcolor="rgba(0,0,0,0)"),
+        legend=dict(font=dict(color="#ccc"), bgcolor="rgba(0,0,0,0)",
+                    orientation="h", y=-0.15, x=0.5, xanchor="center"),
     )
+    for i in (1, 2):
+        fig.update_xaxes(showgrid=False, color="#888", row=1, col=i)
+        fig.update_yaxes(
+            showgrid=True, gridcolor="rgba(255,255,255,0.08)",
+            color="#888", row=1, col=i,
+        )
     return fig
 
 
